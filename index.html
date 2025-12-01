@@ -1,0 +1,890 @@
+<!DOCTYPE html>
+<html lang="pl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bowling League 2025</title>
+    
+    <!-- Styles -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      ::-webkit-scrollbar { width: 8px; height: 8px; }
+      ::-webkit-scrollbar-track { background: #1f2937; }
+      ::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 4px; }
+      ::-webkit-scrollbar-thumb:hover { background: #6b7280; }
+      .recharts-wrapper { min-height: 0 !important; } /* Fix charts warning */
+      
+      /* Error overlay styles */
+      #error-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #0f172a; color: #ef4444; z-index: 9999; padding: 2rem; overflow: auto; font-family: monospace; }
+    </style>
+
+    <!-- Compiler for running TSX in browser -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- External Utilities (UMD) - PDF & Excel -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+    <!-- Import Map for React Ecosystem (ES Modules) - CLEANED UP -->
+    <script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@18.2.0",
+    "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+    "lucide-react": "https://esm.sh/lucide-react@0.294.0",
+    "recharts": "https://esm.sh/recharts@2.12.7?deps=react@18.2.0,react-dom@18.2.0",
+    "@google/genai": "https://esm.run/@google/genai",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/"
+  }
+}
+</script>
+
+    <!-- Global Error Handler for Debugging in Wix/Iframes -->
+    <script>
+      window.onerror = function(message, source, lineno, colno, error) {
+        const overlay = document.getElementById('error-overlay');
+        if (overlay) {
+          overlay.style.display = 'block';
+          overlay.innerHTML += `<h3>Błąd krytyczny aplikacji:</h3><p>${message}</p><p>Linia: ${lineno}</p><pre>${error ? error.stack : ''}</pre><hr/>`;
+        }
+        console.error("Global Error:", message, error);
+      };
+    </script>
+  <link rel="stylesheet" href="/index.css">
+</head>
+  <body class="bg-slate-900 text-slate-100 antialiased">
+    <div id="error-overlay"></div>
+    <div id="root"></div>
+
+    <!-- MAIN APPLICATION SCRIPT -->
+    <script type="text/babel" data-type="module">
+      import React, { useState, useEffect, useMemo, useRef } from 'react';
+      import { createRoot } from 'react-dom/client';
+      import { 
+        Trophy, Calendar, Users, Save, Plus, Trash2, 
+        Sparkles, Lock, LogOut, LayoutDashboard, Award, 
+        X, Download, Upload, FileJson, User, ArrowDownUp,
+        ClipboardPaste, FileText, FileSpreadsheet, AlertTriangle, UserPlus
+      } from 'lucide-react';
+      import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+      import { GoogleGenAI } from '@google/genai';
+
+      // --- CONSTANTS & TYPES ---
+      
+      const CREDENTIALS = {
+        ADMIN_PASS: 'liga2025',
+        GUEST_PASS: 'gość123'
+      };
+
+      const RULES = {
+        FEMALE_HDCP: 8,
+        FINALISTS_COUNT: 12,
+        MAX_RANKING_POINTS: 24
+      };
+
+      const UserRole = {
+        ADMIN: 'ADMIN',
+        GUEST: 'GUEST',
+        NONE: 'NONE'
+      };
+
+      // --- UTILS ---
+
+      const generateId = () => {
+        if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+          return crypto.randomUUID();
+        }
+        return Date.now().toString(36) + Math.random().toString(36).substring(2);
+      };
+
+      const calculateEliminationStats = (player) => {
+        const hdcp = player.isFemale ? RULES.FEMALE_HDCP : 0;
+        const scratchSum = (player.g1 || 0) + (player.g2 || 0) + (player.g3 || 0);
+        const totalHdcp = hdcp * 3;
+        const eliminationTotal = scratchSum + totalHdcp;
+        const eliminationAvg = eliminationTotal / 3;
+
+        return {
+          ...player,
+          eliminationTotal,
+          eliminationAvg
+        };
+      };
+
+      const calculateFinalScore = (player) => {
+        if (player.finalGame === null || player.finalGame === undefined) {
+          return { ...player, finalTotal: null };
+        }
+        const hdcp = player.isFemale ? RULES.FEMALE_HDCP : 0;
+        const finalGameScore = (player.finalGame || 0) + hdcp;
+        const finalTotal = finalGameScore + player.eliminationAvg;
+
+        return { ...player, finalTotal };
+      };
+
+      const sortPlayers = (players, phase) => {
+        return [...players].sort((a, b) => {
+          if (phase === 'ELIMINATION') {
+            if (b.eliminationTotal !== a.eliminationTotal) {
+              return b.eliminationTotal - a.eliminationTotal;
+            }
+            return a.name.localeCompare(b.name);
+          } else {
+            const scoreA = a.finalTotal ?? -1;
+            const scoreB = b.finalTotal ?? -1;
+
+            if (scoreA !== -1 && scoreB !== -1) {
+              if (Math.abs(scoreA - scoreB) > 0.01) return scoreB - scoreA;
+              return b.eliminationAvg - a.eliminationAvg;
+            }
+            if (scoreA !== -1 && scoreB === -1) return -1;
+            if (scoreA === -1 && scoreB !== -1) return 1;
+            if (b.eliminationTotal !== a.eliminationTotal) return b.eliminationTotal - a.eliminationTotal;
+            return b.eliminationAvg - a.eliminationAvg;
+          }
+        });
+      };
+
+      const assignRanksAndPoints = (players) => {
+        const calculated = players.map(p => calculateFinalScore(calculateEliminationStats(p)));
+
+        const sortedByElim = [...calculated].sort((a, b) => {
+           if (b.eliminationTotal !== a.eliminationTotal) return b.eliminationTotal - a.eliminationTotal;
+           return a.name.localeCompare(b.name);
+        });
+        
+        const finalistsIds = new Set(sortedByElim.slice(0, RULES.FINALISTS_COUNT).map(p => p.id));
+
+        const sortedForRanking = [...calculated].sort((a, b) => {
+          const aIsFinalist = finalistsIds.has(a.id);
+          const bIsFinalist = finalistsIds.has(b.id);
+
+          if (aIsFinalist && !bIsFinalist) return -1;
+          if (!aIsFinalist && bIsFinalist) return 1;
+
+          if (aIsFinalist && bIsFinalist) {
+              const scoreA = a.finalTotal || 0;
+              const scoreB = b.finalTotal || 0;
+              if (Math.abs(scoreA - scoreB) > 0.01) return scoreB - scoreA;
+              return b.eliminationAvg - a.eliminationAvg;
+          }
+
+          if (b.eliminationTotal !== a.eliminationTotal) return b.eliminationTotal - a.eliminationTotal;
+          return 0;
+        });
+
+        const rankMap = new Map();
+        sortedForRanking.forEach((p, index) => {
+            rankMap.set(p.id, {
+                rank: index + 1,
+                points: Math.max(0, RULES.MAX_RANKING_POINTS - index)
+            });
+        });
+
+        return calculated.map(p => {
+            const info = rankMap.get(p.id);
+            return {
+                ...p,
+                rank: info ? info.rank : null,
+                rankingPoints: info ? info.points : 0
+            };
+        });
+      };
+
+      // --- SERVICES ---
+
+      const analyzeTournament = async (tournament) => {
+        // Safe access to API KEY. In static file export, user might not have env vars.
+        // We avoid crashing by checking existence.
+        // @ts-ignore
+        const apiKey = (typeof process !== 'undefined' && process.env) ? process.env.API_KEY : '';
+        
+        if (!apiKey) {
+          return "Analiza AI niedostępna (Brak klucza API).";
+        }
+
+        try {
+          const ai = new GoogleGenAI({ apiKey });
+          const leaderboard = tournament.players
+            .sort((a, b) => (b.finalTotal || b.eliminationTotal) - (a.finalTotal || a.eliminationTotal))
+            .slice(0, 5)
+            .map(p => `${p.name} (Wynik: ${p.finalTotal ? p.finalTotal.toFixed(1) : p.eliminationTotal})`)
+            .join(", ");
+
+          const prompt = `
+            Jesteś komentatorem sportowym ligi bowlingowej.
+            Oto dane z turnieju "${tournament.name}" (Data: ${tournament.date}).
+            Top 5 graczy: ${leaderboard}.
+            Napisz krótkie, ekscytujące podsumowanie turnieju w języku polskim. 
+            Wyróżnij zwycięzcę i wspomnij o poziomie rywalizacji. 
+            Maksymalnie 3 zdania.
+          `;
+
+          const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt,
+          });
+          return response.text || "Błąd generowania analizy.";
+        } catch (error) {
+          console.error("Gemini Error:", error);
+          return "Wystąpił błąd podczas łączenia z asystentem AI.";
+        }
+      };
+
+      // --- COMPONENTS ---
+
+      const ConfirmationModal = ({ isOpen, title, message, onConfirm, onCancel }) => {
+        if (!isOpen) return null;
+        return (
+          <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[100] p-4 animate-in fade-in duration-200">
+            <div className="bg-slate-800 border border-slate-700 rounded-lg shadow-2xl max-w-sm w-full p-6 relative">
+              <button onClick={onCancel} className="absolute top-4 right-4 text-slate-400 hover:text-white"><X size={20} /></button>
+              <div className="flex flex-col items-center text-center">
+                <div className="w-12 h-12 bg-red-900/30 text-red-500 rounded-full flex items-center justify-center mb-4 border border-red-900">
+                  <AlertTriangle size={24} />
+                </div>
+                <h3 className="text-xl font-bold text-white mb-2">{title}</h3>
+                <p className="text-slate-400 text-sm mb-6">{message}</p>
+                <div className="flex gap-3 w-full">
+                  <button onClick={onCancel} className="flex-1 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded font-medium transition-colors">Anuluj</button>
+                  <button onClick={onConfirm} className="flex-1 py-2 bg-red-600 hover:bg-red-500 text-white rounded font-bold shadow-lg shadow-red-900/20 transition-colors">Usuń</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      };
+
+      const ImportModal = ({ onClose, onImport }) => {
+        const [text, setText] = useState('');
+        const handleProcess = () => {
+          const lines = text.split('\n');
+          const newPlayers = [];
+          lines.forEach(line => {
+            const trimmed = line.trim();
+            if (!trimmed) return;
+            const parts = trimmed.split(/[\t,;]+/);
+            const name = parts[0].trim();
+            let isFemale = false;
+            if (parts.length > 1) {
+              const gender = parts[1].toLowerCase();
+              if (gender.includes('k') || gender.includes('f') || gender.includes('w')) isFemale = true;
+            }
+            if (name) {
+              newPlayers.push({
+                id: generateId(),
+                name,
+                isFemale,
+                g1: 0, g2: 0, g3: 0,
+                finalGame: null,
+                eliminationTotal: 0, eliminationAvg: 0, finalTotal: null,
+                rank: null, rankingPoints: 0
+              });
+            }
+          });
+          onImport(newPlayers);
+          onClose();
+        };
+
+        return (
+          <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+            <div className="bg-slate-800 border border-slate-700 rounded-lg max-w-lg w-full p-6 shadow-xl">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-xl font-bold text-white flex items-center gap-2"><Upload size={20} /> Import Zawodników</h3>
+                <button onClick={onClose} className="text-slate-400 hover:text-white"><X size={24} /></button>
+              </div>
+              <p className="text-slate-300 text-sm mb-2">Wklej listę z Excela. Format: <code>Imię Nazwisko [Tab] Płeć</code>.</p>
+              <textarea
+                className="w-full h-64 bg-slate-900 border border-slate-700 rounded p-3 text-slate-100 font-mono text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                placeholder={"Jan Kowalski\tM\nAnna Nowak\tK\n..."}
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+              />
+              <div className="mt-4 flex justify-end gap-3">
+                <button onClick={onClose} className="px-4 py-2 text-slate-300 hover:bg-slate-700 rounded">Anuluj</button>
+                <button onClick={handleProcess} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded font-medium">Przetwórz i Dodaj</button>
+              </div>
+            </div>
+          </div>
+        );
+      };
+
+      const RankingTable = ({ tournaments }) => {
+        const [selectedTournaments, setSelectedTournaments] = useState([]);
+        const [useAll, setUseAll] = useState(true);
+        const [isExporting, setIsExporting] = useState(false);
+
+        useEffect(() => {
+          if (useAll) setSelectedTournaments(tournaments.map(t => t.id));
+        }, [tournaments, useAll]);
+
+        const toggleTournament = (id) => {
+          if (useAll) {
+            setUseAll(false);
+            setSelectedTournaments([id]);
+          } else {
+            if (selectedTournaments.includes(id)) {
+              setSelectedTournaments(prev => prev.filter(tid => tid !== id));
+            } else {
+              setSelectedTournaments(prev => [...prev, id]);
+            }
+          }
+        };
+
+        const globalStats = useMemo(() => {
+          const statsMap = new Map();
+          const filteredTournaments = tournaments.filter(t => useAll || selectedTournaments.includes(t.id));
+          filteredTournaments.forEach(t => {
+            t.players.forEach(p => {
+              const key = p.name.trim();
+              if (!statsMap.has(key)) {
+                statsMap.set(key, { name: p.name, totalPoints: 0, tournamentsPlayed: 0, globalAverage: 0 });
+              }
+              const entry = statsMap.get(key);
+              entry.totalPoints += p.rankingPoints;
+              entry.tournamentsPlayed += 1;
+              const currentSum = entry.globalAverage * ((entry.tournamentsPlayed - 1) * 3);
+              const newSum = currentSum + p.eliminationTotal;
+              entry.globalAverage = newSum / (entry.tournamentsPlayed * 3);
+            });
+          });
+          return Array.from(statsMap.values()).sort((a, b) => {
+            if (b.totalPoints !== a.totalPoints) return b.totalPoints - a.totalPoints;
+            return b.globalAverage - a.globalAverage;
+          });
+        }, [tournaments, selectedTournaments, useAll]);
+
+        const chartData = globalStats.slice(0, 10).map(p => ({ name: p.name.split(' ')[0], points: p.totalPoints }));
+
+        const handleExportPdf = async () => {
+          setIsExporting(true);
+          try {
+            if (!window.jspdf) throw new Error("Biblioteka jsPDF nie jest dostępna");
+            
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF();
+            const title = "Ranking Ligi Bowlingowej 2025";
+            
+            // --- Font Loading ---
+            let fontLoaded = false;
+            try {
+                // Use Roboto from a reliable CDN
+                const response = await fetch("https://cdn.jsdelivr.net/npm/roboto-font@0.1.0/fonts/Roboto/Roboto-regular.ttf");
+                if (!response.ok) throw new Error("Network response was not ok");
+                
+                // Font loading timeout fallback
+                const buffer = await Promise.race([
+                  response.arrayBuffer(),
+                  new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 3000))
+                ]);
+
+                const binary = new Uint8Array(buffer).reduce((acc, byte) => acc + String.fromCharCode(byte), '');
+                const base64 = btoa(binary);
+                
+                doc.addFileToVFS("Roboto.ttf", base64);
+                doc.addFont("Roboto.ttf", "Roboto", "normal");
+                doc.setFont("Roboto");
+                fontLoaded = true;
+            } catch (e) {
+                console.warn("Font loading failed, using default", e);
+            }
+            // --------------------
+
+            doc.setFontSize(16);
+            doc.text(title, 14, 15);
+            doc.setFontSize(10);
+            doc.text(`Data: ${new Date().toLocaleDateString()}`, 14, 22);
+
+            const rows = globalStats.map((stat, idx) => [
+              idx + 1, stat.name, stat.tournamentsPlayed, stat.globalAverage.toFixed(2), stat.totalPoints
+            ]);
+
+            doc.autoTable({
+              head: [["Lp.", "Zawodnik", "Turnieje", "Srednia", "Punkty"]],
+              body: rows,
+              startY: 30,
+              styles: { font: fontLoaded ? "Roboto" : "helvetica" },
+              theme: 'grid'
+            });
+
+            doc.save("ranking_bowling.pdf");
+          } catch (e) {
+            console.error(e);
+            alert("Błąd eksportu PDF: " + e.message);
+          } finally {
+            setIsExporting(false);
+          }
+        };
+
+        const handleExportExcel = () => {
+          try {
+            if (!window.XLSX) throw new Error("Biblioteka XLSX nie jest dostępna");
+            const data = [
+                ["Miejsce", "Zawodnik", "Turnieje", "Średnia", "Punkty"],
+                ...globalStats.map((s, i) => [i + 1, s.name, s.tournamentsPlayed, parseFloat(s.globalAverage.toFixed(2)), s.totalPoints])
+            ];
+            const ws = window.XLSX.utils.aoa_to_sheet(data);
+            const wb = window.XLSX.utils.book_new();
+            window.XLSX.utils.book_append_sheet(wb, ws, "Ranking");
+            window.XLSX.writeFile(wb, "ranking_bowling.xlsx");
+          } catch (e) {
+            alert("Błąd eksportu Excel: " + e.message);
+          }
+        };
+
+        return (
+          <div className="space-y-6">
+            <div className="bg-slate-800 p-4 rounded-lg border border-slate-700 flex flex-col sm:flex-row justify-between items-center gap-4">
+               <h3 className="text-lg font-bold text-white flex items-center gap-2"><Calendar size={18}/> Filtruj Turnieje</h3>
+               <div className="flex gap-2">
+                 <button onClick={handleExportPdf} disabled={isExporting} className="flex gap-2 px-3 py-2 bg-red-900/40 text-red-200 rounded border border-red-800 disabled:opacity-50">
+                    <FileText size={16}/> {isExporting ? '...' : 'PDF'}
+                 </button>
+                 <button onClick={handleExportExcel} className="flex gap-2 px-3 py-2 bg-green-900/40 text-green-200 rounded border border-green-800">
+                    <FileSpreadsheet size={16}/> Excel
+                 </button>
+                 <button onClick={() => setUseAll(!useAll)} className={`px-3 py-2 rounded border ${useAll ? 'bg-blue-600 text-white' : 'border-slate-500 text-slate-400'}`}>
+                    {useAll ? 'Ranking Całości' : 'Wybór'}
+                 </button>
+               </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+                {!useAll && tournaments.map(t => (
+                    <button key={t.id} onClick={() => toggleTournament(t.id)} className={`px-3 py-1 text-xs rounded border ${selectedTournaments.includes(t.id) ? 'bg-blue-800 text-blue-200' : 'border-slate-700 text-slate-500'}`}>
+                        {t.name}
+                    </button>
+                ))}
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+               <div className="lg:col-span-2 bg-slate-800 rounded-lg border border-slate-700 overflow-hidden">
+                 <table className="w-full text-left text-sm text-slate-300">
+                   <thead className="bg-slate-900 text-slate-400 uppercase font-medium"><tr><th className="p-3">#</th><th className="p-3">Zawodnik</th><th className="p-3 text-center">Turnieje</th><th className="p-3 text-center">Średnia</th><th className="p-3 text-right">Punkty</th></tr></thead>
+                   <tbody className="divide-y divide-slate-700">
+                     {globalStats.map((s, i) => (
+                       <tr key={s.name}>
+                         <td className="p-3 text-slate-500">{i+1}</td>
+                         <td className="p-3 font-bold text-white">{s.name}</td>
+                         <td className="p-3 text-center">{s.tournamentsPlayed}</td>
+                         <td className="p-3 text-center">{s.globalAverage.toFixed(2)}</td>
+                         <td className="p-3 text-right font-bold text-blue-400 text-lg">{s.totalPoints}</td>
+                       </tr>
+                     ))}
+                   </tbody>
+                 </table>
+               </div>
+               <div className="bg-slate-800 rounded-lg border border-slate-700 p-4 h-[400px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={chartData} layout="vertical">
+                      <XAxis type="number" hide />
+                      <YAxis dataKey="name" type="category" width={80} tick={{fill: '#94a3b8', fontSize: 12}} />
+                      <Tooltip contentStyle={{ backgroundColor: '#1e293b', borderColor: '#334155', color: '#f1f5f9' }} />
+                      <Bar dataKey="points" fill="#3b82f6" radius={[0, 4, 4, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+               </div>
+            </div>
+          </div>
+        );
+      };
+
+      const TournamentDetail = ({ tournament, role, onUpdate, onBack }) => {
+        const [activeTab, setActiveTab] = useState('PLAYERS');
+        const [localPlayers, setLocalPlayers] = useState(tournament.players);
+        const [showImport, setShowImport] = useState(false);
+        const [aiAnalysis, setAiAnalysis] = useState(null);
+        const [isAnalyzing, setIsAnalyzing] = useState(false);
+        const [sortByAvg, setSortByAvg] = useState(false);
+        const [playerToDelete, setPlayerToDelete] = useState(null);
+
+        const isAdmin = role === UserRole.ADMIN;
+        const isGuest = role === UserRole.GUEST;
+
+        useEffect(() => setLocalPlayers(tournament.players), [tournament]);
+
+        const updatePlayers = (newPlayers) => {
+          const recalculated = assignRanksAndPoints(newPlayers);
+          setLocalPlayers(recalculated);
+          onUpdate({ ...tournament, players: recalculated });
+        };
+
+        const handleScoreChange = (id, field, value) => {
+            if (!isAdmin) return;
+            const numValue = value === '' ? 0 : parseInt(value, 10);
+            const updated = localPlayers.map(p => {
+                if (p.id !== id) return p;
+                const updatedP = { ...p, [field]: isNaN(numValue) ? 0 : numValue };
+                return calculateFinalScore(calculateEliminationStats(updatedP));
+            });
+            updatePlayers(updated);
+        };
+
+        const handlePaste = (e, startId, startField, viewList) => {
+           if (!isAdmin) return;
+           e.preventDefault();
+           const pasteData = e.clipboardData.getData('text');
+           if (!pasteData) return;
+           const rows = pasteData.split(/\r?\n/).filter(r => r.trim() !== '');
+           const startIndex = viewList.findIndex(p => p.id === startId);
+           if (startIndex === -1) return;
+           
+           const elimFields = ['g1', 'g2', 'g3'];
+           const updates = new Map();
+
+           rows.forEach((row, rIdx) => {
+              const targetIdx = startIndex + rIdx;
+              if (targetIdx >= viewList.length) return;
+              const player = viewList[targetIdx];
+              const cols = row.split('\t');
+              const pUpdates = {};
+              cols.forEach((val, cIdx) => {
+                 const num = parseInt(val.trim(), 10);
+                 if (isNaN(num)) return;
+                 if (startField !== 'finalGame') {
+                    const fIdx = elimFields.indexOf(startField);
+                    if (fIdx !== -1 && fIdx + cIdx < elimFields.length) {
+                       pUpdates[elimFields[fIdx + cIdx]] = num;
+                    }
+                 } else if (cIdx === 0) {
+                    pUpdates.finalGame = num;
+                 }
+              });
+              if (Object.keys(pUpdates).length > 0) updates.set(player.id, pUpdates);
+           });
+
+           const newPlayers = localPlayers.map(p => {
+              if (updates.has(p.id)) {
+                 const u = updates.get(p.id);
+                 return calculateFinalScore(calculateEliminationStats({ ...p, ...u }));
+              }
+              return p;
+           });
+           updatePlayers(newPlayers);
+        };
+
+        const eliminationView = isGuest ? [...localPlayers].sort((a,b) => b.eliminationTotal - a.eliminationTotal) : localPlayers;
+        
+        const finalistsIds = useMemo(() => {
+           const sorted = [...localPlayers].sort((a,b) => (b.eliminationTotal - a.eliminationTotal) || a.name.localeCompare(b.name));
+           return new Set(sorted.slice(0, RULES.FINALISTS_COUNT).map(p => p.id));
+        }, [localPlayers]);
+
+        const finalsView = useMemo(() => {
+           const finalists = localPlayers.filter(p => finalistsIds.has(p.id));
+           return sortByAvg ? [...finalists].sort((a,b) => b.eliminationAvg - a.eliminationAvg) : finalists;
+        }, [localPlayers, finalistsIds, sortByAvg]);
+
+        const resultsView = useMemo(() => sortPlayers(localPlayers, 'FINAL'), [localPlayers]);
+
+        return (
+          <div className="space-y-6">
+             <div className="bg-slate-800 p-6 rounded-lg border border-slate-700 flex flex-col md:flex-row justify-between items-center gap-4">
+                <div>
+                   <button onClick={onBack} className="text-sm text-slate-400 hover:text-white mb-1">&larr; Powrót</button>
+                   <h1 className="text-3xl font-bold text-white">{tournament.name}</h1>
+                   <p className="text-slate-400">{tournament.date}</p>
+                </div>
+                <div className="flex gap-2">
+                   <button onClick={async () => {
+                      setIsAnalyzing(true);
+                      setAiAnalysis(await analyzeTournament({ ...tournament, players: localPlayers }));
+                      setIsAnalyzing(false);
+                   }} disabled={isAnalyzing} className="px-4 py-2 bg-purple-600 text-white rounded shadow-lg flex items-center gap-2"><Sparkles size={18}/> AI</button>
+                   {isAdmin && <div className="px-3 py-1 bg-green-900/30 text-green-400 border border-green-800 rounded flex items-center text-xs"><Lock size={12} className="mr-1"/> ADMIN</div>}
+                   {isGuest && <div className="px-3 py-1 bg-blue-900/30 text-blue-400 border border-blue-800 rounded flex items-center text-xs"><Users size={12} className="mr-1"/> GOŚĆ</div>}
+                </div>
+             </div>
+             
+             {aiAnalysis && <div className="bg-purple-900/20 border border-purple-500/30 p-4 rounded text-purple-200 relative"><button onClick={()=>setAiAnalysis(null)} className="absolute top-2 right-2"><X size={16}/></button><p>{aiAnalysis}</p></div>}
+
+             <div className="flex border-b border-slate-700 overflow-x-auto pb-1">
+               {[
+                 { id: 'PLAYERS', label: '1. Zawodnicy', icon: Users },
+                 { id: 'ELIMINATION', label: '2. Eliminacje', icon: Trophy },
+                 { id: 'FINALS', label: '3. Finał', icon: Trophy },
+                 { id: 'RESULTS', label: '4. Wyniki', icon: Save },
+               ].map(tab => (
+                 <button key={tab.id} onClick={()=>setActiveTab(tab.id)} className={`flex items-center gap-2 px-6 py-3 font-medium transition-colors whitespace-nowrap border-b-2 ${activeTab===tab.id ? 'border-blue-500 text-blue-400 bg-slate-800' : 'border-transparent text-slate-400 hover:text-white'}`}>
+                    <tab.icon size={16}/> {tab.label}
+                 </button>
+               ))}
+             </div>
+
+             <div className="bg-slate-800 border border-slate-700 rounded-lg p-6 min-h-[500px]">
+                {activeTab === 'PLAYERS' && (
+                  <div>
+                    <div className="flex justify-between mb-4">
+                      <h2 className="text-xl font-bold text-white">Lista Startowa</h2>
+                      {isAdmin && (
+                        <div className="flex gap-2">
+                           <button onClick={() => updatePlayers([...localPlayers, { id: generateId(), name: `Nowy ${localPlayers.length+1}`, isFemale: false, g1:0,g2:0,g3:0,finalGame:null,eliminationTotal:0,eliminationAvg:0,finalTotal:null,rank:null,rankingPoints:0 }])} className="px-4 py-2 bg-green-600 text-white rounded flex items-center gap-2"><Plus size={16}/> Dodaj</button>
+                           <button onClick={() => setShowImport(true)} className="px-4 py-2 bg-blue-600 text-white rounded flex items-center gap-2"><Users size={16}/> Import</button>
+                        </div>
+                      )}
+                    </div>
+                    <table className="w-full text-left text-sm text-slate-300">
+                       <thead className="bg-slate-900 text-slate-400 uppercase"><tr><th className="p-3">Lp</th><th className="p-3">Imię</th><th className="p-3 text-center">Płeć</th><th className="p-3 text-center">Akcje</th></tr></thead>
+                       <tbody>
+                         {localPlayers.map((p, i) => (
+                           <tr key={p.id} className="hover:bg-slate-700">
+                             <td className="p-3">{i+1}</td>
+                             <td className="p-3"><input disabled={!isAdmin} value={p.name} onChange={e => {
+                               if(!isAdmin) return;
+                               const up = localPlayers.map(x => x.id === p.id ? {...x, name: e.target.value} : x);
+                               updatePlayers(up);
+                             }} className="bg-transparent border-b border-transparent focus:border-blue-500 outline-none w-full"/></td>
+                             <td className="p-3 text-center"><button disabled={!isAdmin} onClick={() => {
+                               const up = localPlayers.map(x => x.id === p.id ? calculateFinalScore(calculateEliminationStats({...x, isFemale: !x.isFemale})) : x);
+                               updatePlayers(up);
+                             }} className={`px-2 py-1 rounded text-xs ${p.isFemale ? 'bg-pink-900 text-pink-300' : 'bg-blue-900 text-blue-300'}`}>{p.isFemale?'Kobieta (+8)':'Mężczyzna'}</button></td>
+                             <td className="p-3 text-center">{isAdmin && <button onClick={()=>setPlayerToDelete(p.id)} className="text-red-400"><Trash2 size={16}/></button>}</td>
+                           </tr>
+                         ))}
+                       </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {activeTab === 'ELIMINATION' && (
+                   <div>
+                     <div className="flex justify-between mb-4">
+                        <h2 className="text-xl font-bold text-white">Runda Eliminacyjna</h2>
+                        {isAdmin && <span className="text-xs text-blue-400 flex items-center gap-1"><ClipboardPaste size={14}/> Wklejanie z Excela aktywne</span>}
+                     </div>
+                     <div className="overflow-x-auto">
+                     <table className="w-full text-sm text-slate-300">
+                        <thead className="bg-slate-900 text-slate-400 uppercase"><tr><th className="p-2">Lp/Gracz</th><th className="p-2 text-center">HDCP</th><th className="p-2 text-center">G1</th><th className="p-2 text-center">G2</th><th className="p-2 text-center">G3</th><th className="p-2 text-right">SUMA</th><th className="p-2 text-right">ŚREDNIA</th></tr></thead>
+                        <tbody>
+                          {eliminationView.map((p, i) => (
+                            <tr key={p.id} className={`hover:bg-slate-700 ${finalistsIds.has(p.id)?'bg-blue-900/10':''}`}>
+                               <td className="p-2 font-medium text-white flex gap-2"><span className="text-slate-500 w-6">{i+1}.</span> {p.name} {finalistsIds.has(p.id)&&<span className="text-green-400 text-xs">Q</span>}</td>
+                               <td className="p-2 text-center text-xs">{p.isFemale?'+8':'-'}</td>
+                               {['g1','g2','g3'].map(g => (
+                                 <td key={g} className="p-2 text-center"><input type="number" disabled={!isAdmin} value={p[g]||''} onChange={e=>handleScoreChange(p.id,g,e.target.value)} onPaste={e=>handlePaste(e,p.id,g,eliminationView)} className="w-16 bg-slate-900 border border-slate-700 text-center rounded p-1 focus:border-blue-500 outline-none"/></td>
+                               ))}
+                               <td className="p-2 text-right font-bold text-blue-300">{p.eliminationTotal}</td>
+                               <td className="p-2 text-right text-slate-400">{p.eliminationAvg.toFixed(1)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                     </table>
+                     </div>
+                   </div>
+                )}
+
+                {activeTab === 'FINALS' && (
+                  <div>
+                    <div className="flex justify-between mb-4">
+                      <h2 className="text-xl font-bold text-white">Finał (Top 12)</h2>
+                      <button onClick={()=>setSortByAvg(!sortByAvg)} className="text-sm px-3 py-1 bg-slate-700 rounded flex items-center gap-2"><ArrowDownUp size={14}/> {sortByAvg?'Wg Średniej':'Wg Wprow.'}</button>
+                    </div>
+                    <table className="w-full text-sm text-slate-300">
+                      <thead className="bg-slate-900 text-slate-400 uppercase"><tr><th className="p-3">Gracz</th><th className="p-3 text-right">Śr. Elim</th><th className="p-3 text-center text-amber-500">GRA FINAŁOWA</th><th className="p-3 text-center">HDCP</th><th className="p-3 text-right text-white">WYNIK KOŃCOWY</th></tr></thead>
+                      <tbody>
+                        {finalsView.map(p => (
+                          <tr key={p.id} className="hover:bg-slate-700">
+                            <td className="p-3 font-medium text-white text-lg">{p.name}</td>
+                            <td className="p-3 text-right text-slate-400">{p.eliminationAvg.toFixed(2)}</td>
+                            <td className="p-3 text-center"><input type="number" disabled={!isAdmin} value={p.finalGame ?? ''} onChange={e=>handleScoreChange(p.id,'finalGame',e.target.value)} onPaste={e=>handlePaste(e,p.id,'finalGame',finalsView)} className="w-24 bg-slate-900 border border-amber-700 text-center text-lg font-bold rounded p-2 focus:border-amber-500 outline-none"/></td>
+                            <td className="p-3 text-center">{p.isFemale?'+8':'-'}</td>
+                            <td className="p-3 text-right font-bold text-2xl text-amber-400">{p.finalTotal?.toFixed(2)??'-'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {activeTab === 'RESULTS' && (
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    <div className="bg-slate-900/50 p-4 rounded border border-slate-700">
+                       <h3 className="text-slate-400 uppercase text-xs mb-2">Podium</h3>
+                       {resultsView.slice(0,3).map((p,i) => (
+                         <div key={p.id} className="flex items-center gap-4 mb-3 p-3 bg-slate-800 rounded border border-slate-700">
+                            <div className={`text-2xl font-bold w-10 text-center ${i===0?'text-yellow-400':i===1?'text-gray-300':'text-amber-700'}`}>{i+1}</div>
+                            <div className="flex-1"><div className="text-white font-bold">{p.name}</div><div className="text-xs text-slate-500">Śr. Elim: {p.eliminationAvg.toFixed(2)}</div></div>
+                            <div className="text-blue-400 font-bold text-xl">{p.rankingPoints} pkt</div>
+                         </div>
+                       ))}
+                    </div>
+                    <table className="w-full text-sm text-slate-300">
+                       <thead className="bg-slate-900 text-slate-400 uppercase"><tr><th className="p-2 text-left">Msc</th><th className="p-2">Gracz</th><th className="p-2 text-right">Pkt</th></tr></thead>
+                       <tbody>
+                          {resultsView.slice(3).map((p,i) => (
+                             <tr key={p.id}><td className="p-2 text-slate-500">{i+4}</td><td className="p-2 text-white">{p.name} <span className="text-slate-500 text-xs ml-2">({p.eliminationAvg.toFixed(2)})</span></td><td className="p-2 text-right text-blue-400 font-mono">{p.rankingPoints}</td></tr>
+                          ))}
+                       </tbody>
+                    </table>
+                  </div>
+                )}
+             </div>
+
+             {showImport && <ImportModal onClose={()=>setShowImport(false)} onImport={(imp)=>updatePlayers([...localPlayers, ...imp])} />}
+             <ConfirmationModal isOpen={!!playerToDelete} title="Usuń Gracza" message="Potwierdź usunięcie." onConfirm={() => {
+                updatePlayers(localPlayers.filter(p => p.id !== playerToDelete));
+                setPlayerToDelete(null);
+             }} onCancel={()=>setPlayerToDelete(null)} />
+          </div>
+        );
+      };
+
+      const App = () => {
+        const [role, setRole] = useState(UserRole.NONE);
+        const [pass, setPass] = useState('');
+        const [selRole, setSelRole] = useState('GUEST');
+        const [tournaments, setTournaments] = useState([]);
+        const [view, setView] = useState('DASHBOARD');
+        const [activeId, setActiveId] = useState(null);
+        const [showAdd, setShowAdd] = useState(false);
+        const [newName, setNewName] = useState('');
+        const [newDate, setNewDate] = useState('');
+        const [error, setError] = useState('');
+        const [tToDelete, setTToDelete] = useState(null);
+        const fileRef = useRef(null);
+
+        // Safe Storage Loading
+        useEffect(() => {
+           try {
+               const saved = localStorage.getItem('bowling_league_data_v1');
+               if (saved) {
+                   const parsed = JSON.parse(saved);
+                   if (Array.isArray(parsed)) setTournaments(parsed);
+               }
+           } catch(e) {
+               console.warn("LocalStorage access failed:", e);
+           }
+        }, []);
+
+        // Safe Storage Saving
+        useEffect(() => {
+           if(role !== UserRole.NONE) {
+               try {
+                   localStorage.setItem('bowling_league_data_v1', JSON.stringify(tournaments));
+               } catch(e) {
+                   console.error("Save failed:", e);
+               }
+           }
+        }, [tournaments, role]);
+
+        const handleLogin = (e) => {
+          e.preventDefault();
+          if (selRole === 'ADMIN' && pass === CREDENTIALS.ADMIN_PASS) setRole(UserRole.ADMIN);
+          else if (selRole === 'GUEST' && pass === CREDENTIALS.GUEST_PASS) setRole(UserRole.GUEST);
+          else setError('Błędne hasło');
+        };
+
+        const handleExport = () => {
+           const blob = new Blob([JSON.stringify(tournaments, null, 2)], {type:'application/json'});
+           const link = document.createElement('a');
+           link.href = URL.createObjectURL(blob);
+           link.download = `backup_${new Date().toISOString().split('T')[0]}.json`;
+           link.click();
+        };
+
+        const handleImportFile = (e) => {
+           const file = e.target.files[0];
+           if(!file) return;
+           const reader = new FileReader();
+           reader.onload = (ev) => {
+              try {
+                 const parsed = JSON.parse(ev.target.result);
+                 if(Array.isArray(parsed)) setTournaments(parsed);
+                 else alert("Zły format pliku");
+              } catch(er) { alert("Błąd pliku"); }
+           };
+           reader.readAsText(file);
+        };
+
+        if (role === UserRole.NONE) {
+           return (
+             <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
+                <div className="bg-slate-800 p-8 rounded shadow-xl max-w-md w-full text-center">
+                   <Award size={48} className="text-blue-500 mx-auto mb-4"/>
+                   <h1 className="text-2xl font-bold text-white mb-6">Liga Bowlingowa 2025</h1>
+                   <form onSubmit={handleLogin} className="space-y-4 text-left">
+                      <select className="w-full bg-slate-900 border border-slate-700 rounded p-3 text-white" value={selRole} onChange={e=>setSelRole(e.target.value)}>
+                         <option value="GUEST">Gość</option><option value="ADMIN">Administrator</option>
+                      </select>
+                      <input type="password" placeholder="Hasło" className="w-full bg-slate-900 border border-slate-700 rounded p-3 text-white" value={pass} onChange={e=>setPass(e.target.value)}/>
+                      {error && <p className="text-red-400 text-sm">{error}</p>}
+                      <button className="w-full bg-blue-600 text-white font-bold py-3 rounded">Zaloguj</button>
+                   </form>
+                </div>
+             </div>
+           );
+        }
+
+        return (
+           <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col">
+              <nav className="bg-slate-800 p-4 border-b border-slate-700 flex justify-between items-center sticky top-0 z-40">
+                 <div className="font-bold text-xl text-white cursor-pointer flex items-center gap-2" onClick={()=>setView('DASHBOARD')}><Award className="text-blue-500"/> Liga 2025</div>
+                 <div className="flex gap-4 items-center">
+                    <span className="text-sm text-slate-400 hidden sm:inline">{role===UserRole.ADMIN?'ADMIN':'GOŚĆ'}</span>
+                    <button onClick={()=>{setRole(UserRole.NONE); setPass('');}}><LogOut size={20}/></button>
+                 </div>
+              </nav>
+              <main className="flex-1 p-4 max-w-7xl mx-auto w-full">
+                 {view === 'DASHBOARD' && (
+                    <div className="space-y-6 animate-in fade-in">
+                       <div className="flex flex-col sm:flex-row justify-between gap-4">
+                          <h2 className="text-2xl font-bold flex gap-2"><LayoutDashboard/> Pulpit</h2>
+                          <div className="flex gap-2">
+                             <button onClick={()=>setView('RANKING')} className="px-4 py-2 bg-slate-700 text-white rounded border border-slate-600 flex items-center gap-2"><Award size={18}/> Ranking</button>
+                             {role === UserRole.ADMIN && <button onClick={()=>{setShowAdd(true); setNewDate(new Date().toISOString().split('T')[0]); setNewName('');}} className="px-4 py-2 bg-blue-600 text-white rounded shadow-lg flex items-center gap-2"><Plus size={18}/> Turniej</button>}
+                          </div>
+                       </div>
+                       {role === UserRole.ADMIN && (
+                         <div className="bg-slate-800/50 p-4 rounded border border-slate-700 flex justify-between items-center">
+                            <div className="flex items-center gap-2 text-slate-400 text-sm"><FileJson size={20}/> Kopia Zapasowa</div>
+                            <div className="flex gap-2">
+                               <button onClick={handleExport} className="px-3 py-1 bg-slate-700 rounded text-xs flex gap-1 items-center"><Download size={12}/> Pobierz</button>
+                               <button onClick={()=>fileRef.current.click()} className="px-3 py-1 bg-slate-700 rounded text-xs flex gap-1 items-center"><Upload size={12}/> Wczytaj</button>
+                               <input type="file" ref={fileRef} className="hidden" onChange={handleImportFile} accept=".json"/>
+                            </div>
+                         </div>
+                       )}
+                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                          {tournaments.map(t => (
+                             <div key={t.id} onClick={()=>{setActiveId(t.id); setView('TOURNAMENT');}} className="bg-slate-800 border border-slate-700 hover:border-blue-500 rounded-xl p-6 cursor-pointer relative group shadow-lg">
+                                <div className="text-xs text-slate-500 mb-2 border border-slate-700 inline-block px-2 py-1 rounded bg-slate-900">{t.date}</div>
+                                <h3 className="text-xl font-bold text-white mb-2">{t.name}</h3>
+                                <p className="text-slate-400 text-sm">{t.players.length} zawodników</p>
+                                {role === UserRole.ADMIN && <button onClick={(e)=>{e.stopPropagation(); setTToDelete(t.id);}} className="absolute bottom-4 right-4 text-slate-600 hover:text-red-400"><Trash2 size={16}/></button>}
+                             </div>
+                          ))}
+                          {tournaments.length===0 && <div className="col-span-full text-center py-10 text-slate-500">Brak turniejów.</div>}
+                       </div>
+                    </div>
+                 )}
+                 {view === 'TOURNAMENT' && <div className="animate-in slide-in-from-bottom-4"><TournamentDetail tournament={tournaments.find(t=>t.id===activeId)} role={role} onUpdate={(upt)=>setTournaments(tournaments.map(t=>t.id===upt.id?upt:t))} onBack={()=>setView('DASHBOARD')} /></div>}
+                 {view === 'RANKING' && <div className="animate-in slide-in-from-right-4"><button onClick={()=>setView('DASHBOARD')} className="text-sm text-slate-400 mb-2">&larr; Powrót</button><h2 className="text-2xl font-bold text-white mb-6">Ranking Ogólny</h2><RankingTable tournaments={tournaments}/></div>}
+              </main>
+              {showAdd && (
+                 <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+                    <div className="bg-slate-800 p-6 rounded shadow-xl w-full max-w-sm relative">
+                       <button onClick={()=>setShowAdd(false)} className="absolute top-4 right-4 text-slate-400"><X size={20}/></button>
+                       <h3 className="text-xl font-bold text-white mb-4">Nowy Turniej</h3>
+                       <input autoFocus className="w-full bg-slate-900 border border-slate-700 rounded p-2 mb-3 text-white" placeholder="Nazwa" value={newName} onChange={e=>setNewName(e.target.value)}/>
+                       <input type="date" className="w-full bg-slate-900 border border-slate-700 rounded p-2 mb-4 text-white" value={newDate} onChange={e=>setNewDate(e.target.value)}/>
+                       <button onClick={()=>{
+                          if(newName && newDate) {
+                             setTournaments([{id:generateId(), name:newName, date:newDate, players:[], isFinished:false}, ...tournaments]);
+                             setShowAdd(false);
+                          }
+                       }} className="w-full bg-blue-600 text-white font-bold py-2 rounded">Utwórz</button>
+                    </div>
+                 </div>
+              )}
+              <ConfirmationModal isOpen={!!tToDelete} title="Usuń Turniej" message="Czy na pewno?" onConfirm={()=>{setTournaments(tournaments.filter(t=>t.id!==tToDelete)); setTToDelete(null);}} onCancel={()=>setTToDelete(null)}/>
+           </div>
+        );
+      };
+
+      const root = createRoot(document.getElementById('root'));
+      root.render(<App />);
+    </script>
+  <script type="module" src="/index.tsx"></script>
+</body>
+</html>
